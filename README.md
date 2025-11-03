@@ -2,9 +2,9 @@
 
 **Autor:** *Mair Escobar Y Martín Quintana*  
 **Curso:** Sistemas Operativos — Universidad Diego Portales  
-**Profesor:** Yerko Ortiz
-**Ayudante:** Diego Banda
-**Fecha:** Noviembre 2025  
+**Profesor:** Yerko Ortiz  
+**Ayudante:** Diego Banda  
+**Fecha:** Noviembre 2025    
 
 ---
 
@@ -21,7 +21,7 @@ Se desarrollaron **dos versiones del programa**:
    - Monstruos actúan de manera concurrente, detectando y atacando al héroe.  
    - Ideal para entender el funcionamiento básico de los monitores y turnos sincronizados.
 
-2. **Versión B — N Héroes (extensión experimental)**  
+2. **Versión B — N Héroes (`Doom2D_M.c`)**  
    - Extiende la simulación para múltiples héroes, cada uno ejecutado como un **thread independiente**.  
    - Cada héroe tiene su propio `path`, `hp` y `damage`.
    - Todos los héroes y monstruos comparten el mismo `monitor` y el mismo `mapa`.  
