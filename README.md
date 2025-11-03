@@ -1,4 +1,4 @@
-# 🧠 Doom Simulator 2D(Tarea 2 — Sistemas Operativos UDP 2025)
+# 🧠 Doom Simulator 2D (Tarea 2 — Sistemas Operativos UDP 2025)
 
 **Autor:** *Mair Escobar Y Martín Quintana*  
 **Curso:** Sistemas Operativos — Universidad Diego Portales  
