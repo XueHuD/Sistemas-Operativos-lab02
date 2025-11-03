@@ -4,15 +4,19 @@
 #include <ctype.h>
 #include <stdbool.h>
 #include <pthread.h>
-#include <unistd.h>// usleep 
-#define largo_celda 3 
+#include <unistd.h> // usleep
+#define largo_celda 3
 /* 
 =================INFO==================
 
 Ultimos cambios:
-    - Juego para un Heroe
-    - Sin errores,,, quisas
-Ultima edicion: 2/11/2025, 21:45
+    - Juego para + de un Heroe EXCLUSIVAMENTE, otro formato para identificar heroes,, en el og: HERO_HP en el nuevo: HERO1_HP ... HERO2_HP
+
+    - Arreglado lo de q cuando llega un heroe a la meta, deja q el otro tmb termine su path, mostrando el mapa
+    - Falta lo del PrintMapa y CrearMapa pero bonito
+    - Arreglado cuando heroe intenta avanzar en su path pero hay otro heroe en el lugar. En funcion hero_routine
+
+Ultima edicion: 03/11/2025, 19:10
 
 */
 
@@ -24,6 +28,10 @@ void Quitar_Saltos(char *s){
     while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r')){
         s[--n] = '\0';
     }   
+}
+
+static inline int in_bounds(int y, int x, int H, int W){
+    return (y >= 0 && y < H && x >= 0 && x < W);
 }
 
 void Quitar_Espacios(char *s){
@@ -77,7 +85,7 @@ typedef struct {
     Coord current_coords;
     Coord *path;
     int path_length;
-    bool alive, fighting; //new
+    bool alive, fighting, win; //new
 } Hero; 
 
 typedef struct { 
@@ -99,7 +107,7 @@ typedef struct {
     int grid_h;
     int grid_w;
 
-    bool game_over; // Para cuando todos los heroes lleguen a la meta o todos mueran
+    bool game_over; // Para cuando todos los heroeds lleguen a la meta o todos mueran
 
     // Necesario para saber a cuantos de ellos les 
     // toca actuar antes de cambiar de turno
@@ -125,11 +133,13 @@ void monitor_init(Monitor *monitor, int grid_h, int grid_w) {
     // Nesesario para despues crear el mapa
     monitor->grid_h = grid_h;
     monitor->grid_w = grid_w;
+
+    printf("grid_h: %d, grid_w: %d\n", monitor->grid_h, monitor->grid_w);
     
     // Inicializar el mapa con '.'
-    monitor->mapa = malloc(grid_h * sizeof *monitor->mapa);          // filas (char **)
+    monitor->mapa = malloc(grid_h * sizeof(char**));
     for (int i = 0; i < grid_h; i++) {
-      monitor->mapa[i] = malloc(grid_w * sizeof *monitor->mapa[i]); // columnas (char *)
+        monitor->mapa[i] = malloc(grid_w * sizeof(char*));
         for (int j = 0; j < grid_w; j++) {
             monitor->mapa[i][j] = ".";
         }
@@ -147,28 +157,22 @@ void monitor_init(Monitor *monitor, int grid_h, int grid_w) {
     monitor->turn = true; // Empieza el turno de los heroes
 }
 
-Hero Doom_Slayer = {  //Unico heroe: Doom SlayerDoom_Slayer -_-,    ULTIMO CAMBIO
-    .id = 0,
-    .hp = 0,
-    .damage = 0,
-    .range = 0,
-    .current_coords = {0, 0},
-    .path = NULL,
-    .path_length = 0,
-    .alive = true   
-};
-
+Hero *heros = NULL; // Array de heroes
 Monster *monsters = NULL; // Array de monstruos
+
+bool mostrar_estadisticas = true;
 
 // ==================Funciones para leer datos del txt==================
 
-void LeerConfig(FILE *archivo, Hero *hero){
-    rewind(archivo); // NECESARIO
+void LeerConfig(FILE *archivo, Hero **heroes) {
+    rewind(archivo);
     char linea[256];
-    while (fgets(linea, sizeof(linea), archivo)){
+    
+    // Contar cuántos heroes diferentes hay
+    int max_hero_id = 0;
+    while (fgets(linea, sizeof(linea), archivo)) {
         Quitar_Espacios(linea);
         Quitar_Saltos(linea);
-        if (linea[0] == '\0') continue;
 
         if (strncmp(linea, "GRID_SIZE", 9) == 0){ // Solo esta parte es para el juego, el resto es para leer los datos del heroe
             
@@ -184,178 +188,165 @@ void LeerConfig(FILE *archivo, Hero *hero){
             }
             
         }
-        else if (strncmp(linea, "HERO_HP", 7) == 0){ // Despues quitar para hacer una funcion q lea varios heroes
-            
-            int hp = 0; 
-
-            if(sscanf(linea + 7, "%d", &hp) == 1 && hp > 0){
-                hero->hp = hp; 
-                printf("La vida de Heroe es: %d\n", hero->hp);
+        if (strncmp(linea, "HERO_", 5) == 0) {
+            int hero_id;
+            if (sscanf(linea + 5, "%d_", &hero_id) == 1) {
+                if (hero_id > max_hero_id) {
+                    max_hero_id = hero_id;
+                }
             }
-            else{
-                printf("Error en el formato de hp\n");
-            }
-            
-        }        
-        else if (strncmp(linea, "HERO_ATTACK_DAMAGE", 18) == 0){
-            
-            int dmg = 0;
-
-            if(sscanf(linea + 18, "%d", &dmg) == 1 && dmg > 0){
-                hero->damage = dmg; 
-
-                printf("El daño de ataque del Heroe es de: %d\n", hero->damage);
-            }
-            else{
-                printf("Error en el formato del HERO_ATTACK_DAMAGE");
-            }
-            
         }
-        else if (strncmp(linea, "HERO_ATTACK_RANGE", 17) == 0){
-            
-            int range = 0;
-
-            if(sscanf(linea + 17, "%d", &range) == 1 && range > 0){
-                hero->range = range;
-
-                printf("El rango de ataque del Heroe es de: %d\n", hero->range);
-            }
-            else{
-                printf("Error en el formato del HERO_ATTACK_RANGE");
-            }
-            
-        }
-        else if (strncmp(linea, "HERO_START", 10) == 0){
-            
-            int x = 0, y = 0;
-
-            if(sscanf(linea + 10, "%d %d", &x, &y) == 2 && x >= 0 && y >= 0){
-                hero->current_coords.x = x; 
-                hero->current_coords.y = y; 
-
-                printf("El spawn point del Heroe es: (%d, %d)\n", hero->current_coords.x, hero->current_coords.y);
-            }
-            else{
-                printf("Error en el formato del HERO_START");
-            }
-            
-        }
-        // Guardar path completo del hero 
-        else if (strncmp(linea, "HERO_PATH", 9) == 0){
-
-        }
-            
-            
     }
-}
-
-void LeerHeroPath(FILE *archivo, Hero *heroe) {
-    rewind(archivo); // NECESARIO
-    char linea[256];
-    if (!heroe || !archivo) return;
     
-    // Buscar la línea que empieza con HERO_PATH
+    num_heros = max_hero_id;
+    if (num_heros == 0) {
+        printf("No se encontraron heroes en el archivo\n");
+        return;
+    }
+    
+    printf("Numero de heroes detectados: %d\n", num_heros);
+    *heroes = malloc(sizeof(Hero) * num_heros);
+    if (!*heroes) {
+        printf("Error al asignar memoria para los heroes\n");
+        return;
+    }
+    
+    for (int i = 0; i < num_heros; i++) {
+        (*heroes)[i].id = i + 1; // Empiezan del Heroe1
+        (*heroes)[i].alive = true;
+        (*heroes)[i].fighting = false;
+        (*heroes)[i].win = false;
+        (*heroes)[i].path = NULL;
+        (*heroes)[i].path_length = 0;
+    }
+    
+    rewind(archivo);
     while (fgets(linea, sizeof(linea), archivo)) {
         Quitar_Espacios(linea);
         Quitar_Saltos(linea);
         if (linea[0] == '\0') continue;
+        
+        int hero_id, valor, x, y;
+        
+        // Leer HP
+        if (sscanf(linea, "HERO_%d_HP %d", &hero_id, &valor) == 2) {
+            if (hero_id > 0 && hero_id <= num_heros) {
+                (*heroes)[hero_id - 1].hp = valor;
+                printf("  Héroe %d - HP: %d\n", hero_id, valor);
+            }
+        }
+        // Leer daño de ataque
+        else if (sscanf(linea, "HERO_%d_ATTACK_DAMAGE %d", &hero_id, &valor) == 2) {
+            if (hero_id > 0 && hero_id <= num_heros) {
+                (*heroes)[hero_id - 1].damage = valor;
+                printf("  Héroe %d - Damage: %d\n", hero_id, valor);
+            }
+        }
+        // Leer rango de ataque
+        else if (sscanf(linea, "HERO_%d_ATTACK_RANGE %d", &hero_id, &valor) == 2) {
+            if (hero_id > 0 && hero_id <= num_heros) {
+                (*heroes)[hero_id - 1].range = valor;
+                printf("  Héroe %d - Range: %d\n", hero_id, valor);
+            }
+        }
+        // Leer posición inicial
+        else if (sscanf(linea, "HERO_%d_START %d %d", &hero_id, &x, &y) == 3) {
+            if (hero_id > 0 && hero_id <= num_heros) {
+                (*heroes)[hero_id - 1].current_coords.x = x;
+                (*heroes)[hero_id - 1].current_coords.y = y;
+                printf("  Héroe %d - Start: (%d, %d)\n", hero_id, x, y);
+            }
+        }
+    }
+}
 
-        if (strncmp(linea, "HERO_PATH", 9) == 0) {
-            // Encontramos HERO_PATH, ahora acumular todas las coordenadas
-            int capacidad = 100;  // Capacidad inicial
-            heroe->path = malloc(sizeof(Coord) * capacidad);
-            heroe->path_length = 0;
+void LeerHeroPaths(FILE *archivo, Hero *heroes) {
+    rewind(archivo);
+    char linea[256];
+    
+    for (int hero_idx = 1; hero_idx <= num_heros; hero_idx++) {
+        rewind(archivo);
+        
+        while (fgets(linea, sizeof(linea), archivo)) {
+            Quitar_Espacios(linea);
+            Quitar_Saltos(linea);
+            if (linea[0] == '\0') continue;
             
-            if (!heroe->path) {
-                printf("Error al asignar memoria para el path del heroe\n");
-                return;
-            }
+            char search_pattern[30];
+            sprintf(search_pattern, "HERO_%d_PATH", hero_idx);
             
-            const char *p = linea + 9; 
-            int x, y;
-            
-            while ((p = strchr(p, '(')) != NULL) {
-                if (sscanf(p, "(%d,%d)", &x, &y) == 2) { // Saca los datos en el formato (x,y)
-                    // Expandir el array si es necesario
-                    if (heroe->path_length >= capacidad) {
-                        capacidad *= 2;
-                        Coord *temp = realloc(heroe->path, sizeof(Coord) * capacidad);
-                        if (!temp) {
-                            printf("Error al expandir memoria del path\n");
-                            free(heroe->path);
-                            heroe->path = NULL;
-                            return;
-                        }
-                        heroe->path = temp;
-                    }
-                    
-                    heroe->path[heroe->path_length].x = x;
-                    heroe->path[heroe->path_length].y = y;
-                    heroe->path_length++;
-                }
-                p++;
-            }
-            
-            // Continuar leyendo las siguientes líneas mientras empiecen con '('
-            long posicion_actual = ftell(archivo);
-            while (fgets(linea, sizeof(linea), archivo)) {
-                Quitar_Espacios(linea);
-                Quitar_Saltos(linea);
+            if (strncmp(linea, search_pattern, strlen(search_pattern)) == 0) {
+                printf("Leyendo path para Héroe %d\n", hero_idx);
                 
-                // Si la línea no empieza con '(', terminamos
-                if (linea[0] != '(') {
-                    // Retroceder el puntero del archivo para no perder esta línea
-                    fseek(archivo, posicion_actual, SEEK_SET);
-                    break;
+                int capacidad = 100;
+                heroes[hero_idx - 1].path = malloc(sizeof(Coord) * capacidad);
+                heroes[hero_idx - 1].path_length = 0;
+                
+                if (!heroes[hero_idx - 1].path) {
+                    printf("Error al asignar memoria para el path del héroe %d\n", hero_idx);
+                    continue;
                 }
                 
-                // Procesar esta línea de coordenadas
-                p = linea;
+                const char *p = linea + strlen(search_pattern);
+                int x, y;
+                
                 while ((p = strchr(p, '(')) != NULL) {
                     if (sscanf(p, "(%d,%d)", &x, &y) == 2) {
-                        // Expandir el array si es necesario
-                        if (heroe->path_length >= capacidad) {
+                        if (heroes[hero_idx - 1].path_length >= capacidad) {
                             capacidad *= 2;
-                            Coord *temp = realloc(heroe->path, sizeof(Coord) * capacidad);
+                            Coord *temp = realloc(heroes[hero_idx - 1].path, sizeof(Coord) * capacidad);
                             if (!temp) {
-                                printf("Error al expandir memoria del path\n");
-                                free(heroe->path);
-                                heroe->path = NULL;
-                                return;
+                                printf("Error al expandir memoria del path para héroe %d\n", hero_idx);
+                                break;
                             }
-                            heroe->path = temp;
+                            heroes[hero_idx - 1].path = temp;
                         }
                         
-                        heroe->path[heroe->path_length].x = x;
-                        heroe->path[heroe->path_length].y = y;
-                        heroe->path_length++;
+                        heroes[hero_idx - 1].path[heroes[hero_idx - 1].path_length].x = x;
+                        heroes[hero_idx - 1].path[heroes[hero_idx - 1].path_length].y = y;
+                        heroes[hero_idx - 1].path_length++;
                     }
                     p++;
                 }
                 
-                posicion_actual = ftell(archivo);
-            }
-            
-            // Ajustar el tamaño final del array
-            if (heroe->path_length > 0) {
-                Coord *temp = realloc(heroe->path, sizeof(Coord) * heroe->path_length);
-                if (temp) {
-                    heroe->path = temp;
+                long posicion_actual = ftell(archivo);
+                while (fgets(linea, sizeof(linea), archivo)) {
+                    Quitar_Espacios(linea);
+                    Quitar_Saltos(linea);
+                    
+                    if (linea[0] != '(') {
+                        fseek(archivo, posicion_actual, SEEK_SET);
+                        break;
+                    }
+                    
+                    p = linea;
+                    while ((p = strchr(p, '(')) != NULL) {
+                        if (sscanf(p, "(%d,%d)", &x, &y) == 2) {
+                            if (heroes[hero_idx - 1].path_length >= capacidad) {
+                                capacidad *= 2;
+                                Coord *temp = realloc(heroes[hero_idx - 1].path, sizeof(Coord) * capacidad);
+                                if (!temp) {
+                                    printf("Error al expandir memoria del path para héroe %d\n", hero_idx);
+                                    break;
+                                }
+                                heroes[hero_idx - 1].path = temp;
+                            }
+                            
+                            heroes[hero_idx - 1].path[heroes[hero_idx - 1].path_length].x = x;
+                            heroes[hero_idx - 1].path[heroes[hero_idx - 1].path_length].y = y;
+                            heroes[hero_idx - 1].path_length++;
+                        }
+                        p++;
+                    }
+                    
+                    posicion_actual = ftell(archivo);
                 }
+                
+                printf("Path del Heroe %d cargado con %d coordenadas\n", hero_idx, heroes[hero_idx - 1].path_length);
+                break;
             }
-            
-            printf("Path del heroe cargado con %d coordenadas:\n", heroe->path_length);
-            for (int j = 0; j < heroe->path_length; j++) {
-                printf("(%d, %d) ", heroe->path[j].x, heroe->path[j].y);
-                if ((j + 1) % 10 == 0) printf("\n");  // Salto cada 10 coordenadas
-            }
-            printf("\n");
-            
-            return;  // Salir después de procesar HERO_PATH
         }
     }
-    
-    printf("No se encontró HERO_PATH en el archivo\n");
 }
 
 void LeerMonstersConfig(FILE *archivo, Monster **monsters) { // Usar cmo base para los varios heroes
@@ -466,7 +457,6 @@ void LeerMonstersConfig(FILE *archivo, Monster **monsters) { // Usar cmo base pa
 int obtenerFila(int y, int filas) {
     return filas - 1 - y;  // Invertir el eje Y
 }
-
 int obtenerColumna(int x) {
     return x;  // El eje X se mantiene igual
 }
@@ -480,35 +470,41 @@ void PrintMapa(Monitor *monitor) {
     }
 }
 
-void CrearMapa(Hero *hero, Monster *monsters, Monitor *monitor) {
+
+// Casi todo es debug
+void CrearMapa(Hero *heros, Monster *monsters, Monitor *monitor) {
     for (int i = 0; i < Grid.grid_h; i++) {
         for (int j = 0; j < Grid.grid_w; j++) {
             monitor->mapa[i][j] = ".";
         }
     }
 
-    for (int i = 0; i < hero->path_length; i++) {
-        int py = obtenerFila(hero->path[i].y, Grid.grid_h);
-        int px = obtenerColumna(hero->path[i].x);
-        if (py >= 0 && py < Grid.grid_h && px >= 0 && px < Grid.grid_w) {
+    for (int h = 0; h < num_heros; h++) {
+        for (int k = 0; k < heros[h].path_length; k++) {
+            int py = obtenerFila(heros[h].path[k].y, Grid.grid_h);
+            int px = obtenerColumna(heros[h].path[k].x);
+            if (!in_bounds(py, px, Grid.grid_h, Grid.grid_w)) continue;
+
             if (strcmp(monitor->mapa[py][px], ".") == 0) {
-                monitor->mapa[py][px] = "+";
+                monitor->mapa[py][px] = "+";   // solo marca si estaba vacío
             }
         }
     }
 
-    int hy = obtenerFila(hero->current_coords.y, Grid.grid_h);
-    int hx = obtenerColumna(hero->current_coords.x);
-    if (hy >= 0 && hy < Grid.grid_h && hx >= 0 && hx < Grid.grid_w) {
-        monitor->mapa[hy][hx] = "H";
+    for (int h = 0; h < num_heros; h++) {
+        int hy = obtenerFila(heros[h].current_coords.y, Grid.grid_h);
+        int hx = obtenerColumna(heros[h].current_coords.x);
+        if (!in_bounds(hy, hx, Grid.grid_h, Grid.grid_w)) continue;
+
+        monitor->mapa[hy][hx] = "H";  
     }
 
     for (int i = 0; i < num_monsters; i++) {
         int my = obtenerFila(monsters[i].current_coords.y, Grid.grid_h);
         int mx = obtenerColumna(monsters[i].current_coords.x);
-        if (my >= 0 && my < Grid.grid_h && mx >= 0 && mx < Grid.grid_w) {
-            monitor->mapa[my][mx] = "M";  // <- solo literal, NO strdup
-        }
+        if (!in_bounds(my, mx, Grid.grid_h, Grid.grid_w)) continue;
+
+        monitor->mapa[my][mx] = "M";  // literal, no strdup
     }
 
 }
@@ -522,7 +518,7 @@ void AlertarMonstruos(Monster *monster) { // <- indicando moster para despues to
     int y_og_mon = monster->current_coords.y;
 
     for (int i = 0; i < num_monsters; i++){
-        if(monsters[i].alive == false || (monsters[i].id ==monster->id || monsters[i].alerted)){
+        if(monsters[i].alive == false || monsters[i].id == monster->id || monsters[i].alerted){
             continue;
         }
         else{
@@ -563,7 +559,6 @@ void MonstruoAtaca(Monster *monster){ // ataca o se acerca al heroe
             int hero_y_mapa = obtenerFila(monster->target_hero->current_coords.y, Grid.grid_h);
             int hero_x_mapa = obtenerColumna(monster->target_hero->current_coords.x);
             monitor.mapa[hero_y_mapa][hero_x_mapa] = ".";
-
             monitor.heroes_vivos--;
         }
         else{
@@ -649,9 +644,9 @@ void MonstruoAtaca(Monster *monster){ // ataca o se acerca al heroe
             char temp_name[10];
             sprintf(temp_name, "M%d", monster->id);
             monitor.mapa[new_y_mapa][new_x_mapa] = strdup(temp_name);
-
+            
             printf("( ➡️  ​) El Monstruo%d se movio a (%d, %d)\n", monster->id, new_x, new_y);
-            PrintMapa(&monitor);
+            //PrintMapa(&monitor);
         } else {
             printf("El Monstruo%d no puede moverse\n", monster->id);
         }
@@ -702,105 +697,195 @@ void MounstroEnRangoAtaque(Hero *hero){
 void HeroEnRangoVision(Monster *monster){
     int x_monster = monster->current_coords.x;
     int y_monster = monster->current_coords.y;
-    
-    int x_hero = Doom_Slayer.current_coords.x;
-    int y_hero = Doom_Slayer.current_coords.y;
 
-    int diff_x = abs(x_monster - x_hero); // Cambiado pq antes era a partir de la dist de manhattan
-    int diff_y = abs(y_monster - y_hero);
+    if(!monster->alerted && monster->alive){
+        for (int i = 0; i < num_heros; i++){
+            int x_hero = heros[i].current_coords.x;
+            int y_hero = heros[i].current_coords.y;
 
-    if (diff_x <= monster->vision_range && diff_y <= monster->vision_range && Doom_Slayer.alive && monster->alerted == false) {  
-        monster->alerted = true; // nose si ta bien la logica del alerted   
-        monster->target_hero = &Doom_Slayer; // Apuntar al heroe detectado
-        printf("( ❗ ​) Monstruo%d detecto al Heroe%d\n", monster->id, monster->target_hero->id);
-        AlertarMonstruos(monster);
+            int diff_x = abs(x_monster - x_hero); // Cambiado pq antes era a partir de la dist de manhattan
+            int diff_y = abs(y_monster - y_hero);
+
+            if (diff_x <= monster->vision_range && diff_y <= monster->vision_range && heros[i].alive && monster->alerted == false) {  
+                monster->alerted = true; // nose si ta bien la logica del alerted   
+                monster->target_hero = &heros[i]; // Apuntar al heroe detectado
+                printf("( ❗ ​) Monstruo%d detecto al Heroe%d\n", monster->id, monster->target_hero->id);
+                AlertarMonstruos(monster);
+                break;
+            }
+        }
     }
-    else if (monster->alerted == true && monster->target_hero != NULL && monster->alive)
+    
+
+    if (monster->alerted == true && monster->target_hero != NULL && monster->alive)
     {
-        printf("El Monstruo%d esta visualizando al Heroe%d\n", monster->id, monster->target_hero->id);
-        MonstruoAtaca(monster);
+        if(monster->target_hero->alive){
+            printf("El Monstruo%d esta visualizando al Heroe%d\n", monster->id, monster->target_hero->id);
+            MonstruoAtaca(monster);
+        }
+        else{
+            printf("El Monstruo%d perdio de vista al Heroe%d\n", monster->id, monster->target_hero->id);
+            monster->alerted = false;
+            monster->target_hero = NULL;
+        }
     }
     else{
+        monster->alerted = false;
         monster->target_hero = NULL;
     }
 }
 
 // ==================Funciones de los threads==================
 
-void* hero_routine(void* arg) {
+void* hero_routine(void* arg) { //og
     Hero* hero = (Hero*)arg;
     printf("Heroe%d inicia en (%d, %d) con %d de vida.\n",hero->id, hero->current_coords.x, hero->current_coords.y, hero->hp);
 
-    for (int i = 0; i < hero->path_length; i++) {
-        pthread_mutex_lock(&monitor.mutex);
+    while (hero->alive && !monitor.game_over){
+        for (int i = 0; i < hero->path_length; i++) {
+            pthread_mutex_lock(&monitor.mutex);
 
-        while(monitor.turn == false && !monitor.game_over) { // Esperar turno de heroes
-            monitor.heroes_esperando++;
-            pthread_cond_wait(&monitor.hero_turn, &monitor.mutex);
-            monitor.heroes_esperando--;
-        }
+            while(monitor.turn == false && !monitor.game_over) { // Esperar turno de heroes
+                monitor.heroes_esperando++;
+                pthread_cond_wait(&monitor.hero_turn, &monitor.mutex);
+                monitor.heroes_esperando--;
+            }
 
-        if(monitor.game_over) {
+            if(monitor.game_over) {
+                pthread_mutex_unlock(&monitor.mutex);
+                printf("Heroe%d detecta que el juego ha terminado.\n", hero->id);
+                break;
+            }
+
+            if(!hero->alive) {
+
+                if(monitor.heroes_actuados == monitor.heroes_vivos) {
+                    monitor.turn = false;
+                    monitor.heroes_actuados = 0;
+                    printf("\n========= Todos los Heroes actuaron, turno de los Monstruos =========\n\n");
+                    pthread_cond_broadcast(&monitor.monster_turn);
+                }
+                
+                pthread_mutex_unlock(&monitor.mutex);
+                usleep(20000);
+                break;
+            }
+
+            if (monitor.heroes_vivos <= 0) {
+                printf("( ❌ ) Los Heroes han muerto, ya no quiero jugar the game\n");
+                monitor.game_over = true;
+                monitor.turn = false;
+
+                pthread_mutex_unlock(&monitor.mutex);
+
+                pthread_cond_broadcast(&monitor.monster_turn); 
+                pthread_cond_broadcast(&monitor.hero_turn);
+                break;
+            }
+
+            MounstroEnRangoAtaque(hero); // Siempre poner antes q el movimiento
+
+            int mov_heroe = true;
+
+            if(!hero->fighting) { // ver si se puede mover, ERROR CUANDO HAY UN HEROE AL LUGAR DONDE SE DEBE MOVER
+                // Verificar si ya hay un hereo en la siguiente casilla a moverse
+                for(int w = 0; w < num_heros; w++){
+                    if(hero->path[i].x == heros[w].current_coords.x && hero->path[i].y == heros[w].current_coords.y && heros[w].alive){
+                        printf("👾 👾 👾 👾 👾 👾 👾 👾 👾 👾 👾 👾\n");
+                        printf("Heroe%d no puede avanzar a (%d, %d) porque el Heroe%d esta en (%d, %d)...\n", hero->id, hero->path[i].x, hero->path[i].y, heros[w].id, heros[w].current_coords.x, heros[w].current_coords.y);
+                        mov_heroe = false;
+                    }
+                }
+
+                if(mov_heroe == true){
+                    monitor.mapa[obtenerFila(hero->current_coords.y, Grid.grid_h)][obtenerColumna(hero->current_coords.x)] = "."; // Limpiar la posicion anterior
+
+                    hero->current_coords.x = hero->path[i].x;
+                    hero->current_coords.y = hero->path[i].y;
+
+                    char temp_hero_name[20];
+                    snprintf(temp_hero_name, sizeof(temp_hero_name), "H%d", hero->id);
+
+                    monitor.mapa[obtenerFila(hero->current_coords.y, Grid.grid_h)][obtenerColumna(hero->current_coords.x)] = temp_hero_name; // Actualizar la nueva posicion
+                
+                    printf("( ➡️  ​) Heroe%d se movio a (%d, %d)\n",hero->id, hero->current_coords.x, hero->current_coords.y);
+                    }
+                else{
+                    i--;
+                    mov_heroe = true;
+                }
+            }
+            else{
+                i--; // No avanza en el path si esta peleando
+                hero->fighting = false; // Resetear pelea para el siguiente turno
+            }
+
+            monitor.heroes_actuados++;
+
+            if(i == hero->path_length -1){
+                monitor.heroes_vivos--;
+                monitor.heroes_actuados--;
+                hero->alive = false;
+                hero->win = true;
+                // Podria poner una var en Hero para ver si gano o no: bool gano
+                printf("Heroe%d llego al final de su ruta YIPI!!! 🎉 ​🎉 ​🎉 ​\n", hero->id);
+                PrintMapa(&monitor);
+                printf("Estadisticas finales del Heroe%d:\n HP: %d\n",hero->id, hero->hp);
+            }
+
+            //////////////////////////
+
+            
+
+            if(monitor.heroes_actuados == monitor.heroes_vivos) { //Una vez todos los heros tienen su turno
+                monitor.turn = false;  // Cambiar turno a monsters
+                monitor.heroes_actuados = 0;  // Resetear contador
+                
+                PrintMapa(&monitor);
+                printf("\n========= Todos los Heroes actuaron, turno de los Monstruos =========\n\n");
+
+                if(monitor.monsters_vivos == 0) {
+                    monitor.turn = true;
+                }
+
+                pthread_cond_broadcast(&monitor.monster_turn);  // Avisar a TODOS los monstruos
+            }
+
             pthread_mutex_unlock(&monitor.mutex);
-            printf("Heroe%d detecta que el juego ha terminado.\n", hero->id);
-            break;
+            usleep(20000);// 0.02 segundos
         }
 
-        if (!hero->alive) { // Cambiar logica despues para mas heroes (heroes_vivos == 0) {
-            printf("( ❌ ) El Heroe%d ha muerto, ya no quiero jugar the game\n", hero->id);
-            monitor.game_over = true;
-            monitor.turn = false;
+        // Verificar si termino el juego
 
-            pthread_mutex_unlock(&monitor.mutex);
-
-            pthread_cond_broadcast(&monitor.monster_turn); 
-            pthread_cond_broadcast(&monitor.hero_turn);
-            break;
+        int heroes_muertos = 0;
+        for(int i = 0; i < num_heros; i++){
+            if(heros[i].alive == false){
+                heroes_muertos++;
+            }
         }
 
-        MounstroEnRangoAtaque(hero); // Siempre poner antes q el movimiento
-
-        if(!hero->fighting) { // mover
-            monitor.mapa[obtenerFila(hero->current_coords.y, Grid.grid_h)][obtenerColumna(hero->current_coords.x)] = "."; // Limpiar la posicion anterior
-
-            hero->current_coords.x = hero->path[i].x;
-            hero->current_coords.y = hero->path[i].y;
-
-            monitor.mapa[obtenerFila(hero->current_coords.y, Grid.grid_h)][obtenerColumna(hero->current_coords.x)] = "H"; // Actualizar la nueva posicion
-        
-            printf("( ➡️  ​) Heroe%d se movio a (%d, %d)\n",hero->id, hero->current_coords.x, hero->current_coords.y);
-        }
-        else{
-            i--; // No avanza en el path si esta peleando
-            hero->fighting = false; // Resetear pelea para el siguiente turno
-        }
-
-        monitor.turn = false; // Cambiar turno a monstruos
-
-        if(i == hero->path_length - 1) { // El héroe ha llegado al final
-            monitor.game_over = true; 
-            monitor.heroes_vivos--;
-            printf("Heroe%d llego al final de su ruta YIPI!!! 🎉 ​🎉 ​🎉 ​\n", hero->id);
+        if(heroes_muertos == num_heros && mostrar_estadisticas){
+            mostrar_estadisticas = false;
+            printf("============Juego Terminado============\n");
             PrintMapa(&monitor);
-            printf("Estadisticas finales del Heroe%d:\n HP: %d\n",hero->id, hero->hp);
+            for(int i = 0; i < num_heros; i++){
+                if(heros[i].win){
+                    printf("Heroe%d llego a la meta con %d HP 🎉 🎉 🎉 \n", heros[i].id, heros[i].hp);
+                }
+                else{
+                    printf("Heroe%d murio en el camino ❌ ❌ ❌ \n", heros[i].id);
+                }
+            }
 
+            usleep(20000);
+
+            monitor.game_over = true;
             pthread_cond_broadcast(&monitor.monster_turn);
             pthread_cond_broadcast(&monitor.hero_turn);
-
             pthread_mutex_unlock(&monitor.mutex);
             continue;
         }
-
-
-        PrintMapa(&monitor);
-        printf("\nHP: %d\n", hero->hp);
-        printf("\n========= El Heroe ya actuo, turno de los Monstruos =========\n\n");
-        pthread_mutex_unlock(&monitor.mutex);
-
-        pthread_cond_broadcast(&monitor.monster_turn); // Notificar a los monstruos
-        
-        // Pausa para simular el movimiento
-        usleep(20000);// 0.02 segundos
+        break;
     }
 
     pthread_exit(NULL);
@@ -845,7 +930,6 @@ void* monster_routine(void* arg) {
         HeroEnRangoVision(monster);
 
         if(monster->target_hero != NULL) { // Verificar rango de vision y alertar a los demas con una funcion despues
-            
             //printf("(Monstruo%d vio al Heroe%d, monstruo quiere ver sangre)\n", monster->id, monster->target_hero->id);
         }
         else {
@@ -857,6 +941,8 @@ void* monster_routine(void* arg) {
         if(monitor.monsters_actuados == monitor.monsters_vivos) { //Una vez todos los monstruos tienen su turno
             monitor.turn = true;  // Cambiar turno a héroes
             monitor.monsters_actuados = 0;  // Resetear contador
+
+            PrintMapa(&monitor);
             printf("\n========= Todos los Monstruos actuaron, turno del Heroe =========\n\n");
             pthread_cond_broadcast(&monitor.hero_turn);  // Avisar a TODOS los héroes
         }
@@ -871,7 +957,7 @@ void* monster_routine(void* arg) {
 }
 
 
-int main(int argc, char **argv) { // LISTO NO TOCAR GRRR (solo agregado argv)
+int main(int argc, char **argv) { // LISTO NO TOCAR GRRR
     // Si no se pasa argumento, usa "ejemplo.txt" por defecto
     const char *nombre_archivo = (argc >= 2) ? argv[1] : "ejemplo.txt";
 
@@ -881,36 +967,37 @@ int main(int argc, char **argv) { // LISTO NO TOCAR GRRR (solo agregado argv)
             perror("No se pudo abrir el archivo");
             return 1; // Terminar el programa con error
         }
-
-        LeerConfig(archivo, &Doom_Slayer);
-        LeerHeroPath(archivo, &Doom_Slayer);
+        LeerConfig(archivo, &heros);
+        LeerHeroPaths(archivo, heros); // Parece q si pongo este despues del LeerConfig no funciona. Y ademas q no lee las coords despues d los saltos de linea
         LeerMonstersConfig(archivo, &monsters);
     }
-    
-    // Inicializar el monitor
+
     monitor_init(&monitor, Grid.grid_h, Grid.grid_w);
-    CrearMapa(&Doom_Slayer, monsters, &monitor); // Despues de leer los datos
 
-    printf("----------------------------FIN DE LEER DATOS----------------------------\n\n\n");
-
+    CrearMapa(heros, monsters, &monitor); // Despues de leer los datos
+    
+    printf("----------------------------FIN DE LEER DATOS----------------------------\n\n\n" );
     // Creacion de threads
-    pthread_t hero_thread;
+    pthread_t hero_threads[num_heros];
     pthread_t monster_threads[num_monsters];
 
-    pthread_create(&hero_thread, NULL, hero_routine, &Doom_Slayer);
-
+    for (int i = 0; i < num_heros; i++) {
+        pthread_create(&hero_threads[i], NULL, hero_routine, &heros[i]);
+    }
     for (int i = 0; i < num_monsters; i++) {
         pthread_create(&monster_threads[i], NULL, monster_routine, &monsters[i]);
     }
 
     // Esperar a que los threads terminen
-    pthread_join(hero_thread, NULL);
+    for (int i = 0; i < num_heros; i++) {
+        pthread_join(hero_threads[i], NULL);
+    }
     for (int i = 0; i < num_monsters; i++) {
         pthread_join(monster_threads[i], NULL);
     }
 
     // Liberar memoria
-    free(Doom_Slayer.path);
+    free(heros);
     free(monsters);
     fclose(archivo);
     return 0;
